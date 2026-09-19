@@ -46,6 +46,10 @@ python scripts/run_experiments.py \
   --continue-on-error
 ```
 
+When the source directory is named `source24`, the runner automatically merges
+`configs/source24.yaml`; this selects `latent_dim=64` and the SparNiche learning
+rate `0.005`. Passing `--config` explicitly disables this automatic overlay.
+
 The default output root is `/root/autodl-fs/bench_results`. Seeds map to stable method directories:
 
 ```text

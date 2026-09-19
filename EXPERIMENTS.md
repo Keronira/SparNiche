@@ -14,6 +14,10 @@
 | Labels | `adata.obs["annotation_final"]` |
 | Repeats | seeds 1234, 1235, 1236 |
 
+For `source24`, `configs/source24.yaml` overrides the latent dimension to 64
+and the SparNiche learning rate to 0.005. The batch runner applies this overlay
+automatically unless an explicit `--config` path is supplied.
+
 Ambiguous labels such as `Unknown` are excluded from benchmark scoring. `n_clusters` is inferred from the remaining ground-truth categories unless it is supplied explicitly.
 
 ## `run_experiments.py` experiment sets

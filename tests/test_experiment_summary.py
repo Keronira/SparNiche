@@ -14,6 +14,7 @@ from scripts.run_experiments import (
     resolve_source_arguments,
     resolve_run_seeds,
     resolve_repeat_output_root,
+    load_run_config,
     selected_rows,
 )
 
@@ -135,6 +136,37 @@ class ExperimentSummaryTests(unittest.TestCase):
             sources = resolve_source_arguments(["source1", "source2"], data_root=root)
             paths = input_paths_from_source(sources)
             self.assertEqual([path.name for path in paths], ["a.h5ad", "b.h5ad", "c.h5ad", "d.h5ad"])
+
+    def test_source24_uses_its_default_overlay(self):
+        config = load_run_config(
+            None,
+            Path("/root/autodl-fs/data/source24/151671.h5ad"),
+        )
+        self.assertEqual(config["model"]["latent_dim"], 64)
+        self.assertEqual(config["model"]["sparniche"]["lr"], 0.005)
+        self.assertEqual(config["data"]["n_neighbors"], 12)
+
+    def test_other_sources_keep_the_shared_default(self):
+        config = load_run_config(
+            None,
+            Path("/root/autodl-fs/data/source1/sample.h5ad"),
+        )
+        self.assertEqual(config["model"]["latent_dim"], 32)
+        self.assertEqual(config["model"]["sparniche"]["lr"], 0.01)
+
+    def test_explicit_config_disables_source24_overlay(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "custom.yaml"
+            config_path.write_text(
+                "model:\n  latent_dim: 16\n  sparniche:\n    lr: 0.02\n",
+                encoding="utf-8",
+            )
+            config = load_run_config(
+                config_path,
+                Path("/root/autodl-fs/data/source24/151671.h5ad"),
+            )
+        self.assertEqual(config["model"]["latent_dim"], 16)
+        self.assertEqual(config["model"]["sparniche"]["lr"], 0.02)
 
 
 if __name__ == "__main__":

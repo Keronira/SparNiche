@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.config import apply_overrides, load_yaml, save_yaml  # noqa: E402
+from src.config import apply_overrides, deep_merge, load_yaml, save_yaml  # noqa: E402
 from src.manifest import expand_manifest  # noqa: E402
 from src.evaluation import clustering_metrics  # noqa: E402
 from src.benchmark import filter_ambiguous_ground_truth  # noqa: E402
@@ -37,6 +37,10 @@ DEFAULT_EPOCHS = 550
 DEFAULT_SEED = 1234
 DEFAULT_REPEAT_COUNT = 3
 DEFAULT_DATA_ROOT = Path("/root/autodl-fs/data")
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "config.yaml"
+SOURCE_CONFIGS = {
+    "source24": PROJECT_ROOT / "configs" / "source24.yaml",
+}
 
 
 def detect_input_kind(adata) -> str:
@@ -174,7 +178,12 @@ def parse_args() -> argparse.Namespace:
         help="Allow K-1 clusters (-1, default) or require at least K clusters (0).",
     )
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs" / "config.yaml")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Explicit config path; otherwise the shared default plus a registered source overlay is used.",
+    )
     parser.add_argument("--python-exe", default=sys.executable)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--resume", action="store_true")
@@ -320,6 +329,17 @@ def input_paths_from_source(
         else:
             raise FileNotFoundError(f"input source does not exist: {item}")
     return paths[: int(max_samples)] if max_samples else paths
+
+
+def load_run_config(config_path: Path | None, input_path: Path) -> dict:
+    """Load an explicit config or the shared default with a source overlay."""
+    if config_path is not None:
+        return load_yaml(Path(config_path))
+    base = load_yaml(DEFAULT_CONFIG_PATH)
+    source_config = SOURCE_CONFIGS.get(Path(input_path).parent.name)
+    if source_config is None:
+        return base
+    return deep_merge(base, load_yaml(source_config))
 
 
 def resolved_config(
@@ -486,7 +506,6 @@ def main() -> int:
     output_root.mkdir(parents=True, exist_ok=True)
     sequence_id = args.sequence_id or datetime.now().strftime("%Y%m%d-%H%M%S")
     print(f"[SEQ ] {sequence_id} output={output_root}")
-    base = load_yaml(args.config)
     manifest_rows_by_path: dict[Path, list[dict]] = {}
     failures = []
     manifest_rows = []
@@ -495,6 +514,7 @@ def main() -> int:
     input_kind_cache: dict[Path, str] = {}
     selected_seeds = list(dict.fromkeys(int(row["seed"]) for row in rows))
     for input_path in input_paths:
+        base = load_run_config(args.config, input_path)
         n_clusters = (
             int(args.n_clusters)
             if args.n_clusters is not None
