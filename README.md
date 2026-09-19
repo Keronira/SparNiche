@@ -27,7 +27,7 @@ Image content in `adata.uns["spatial"]` or `adata.obsm["image_features"]` is ign
 ## Installation
 
 ```bash
-git clone https://github.com/<owner>/SparNiche.git
+git clone https://github.com/Keronira/SparNiche.git
 cd SparNiche
 python -m pip install -r requirements.txt
 python -m unittest discover -s tests -p "test_*.py"
