@@ -1,0 +1,4 @@
+datasets: [dlpfc]
+seeds: [2023]
+grid:
+  model.variant: [local_graph_normalized]

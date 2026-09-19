@@ -1,0 +1,52 @@
+datasets:
+  dlpfc:
+    paths:
+      input_h5ad: ${SPARNICHE_DATA_ROOT}/dlpfc.h5ad
+    data:
+      label_key: layer_guess
+      n_neighbors: 12
+      preprocessing:
+        enabled: true
+        reuse_existing: false
+        feature_key: feat
+        input_kind: raw_counts
+        hvg_enabled: true
+        min_cells: 50
+        min_counts: 10
+        n_top_genes: 2000
+        hvg_flavor: seurat_v3
+        normalize_total: true
+        target_sum: 1000000.0
+        scale: true
+        pca_enabled: true
+        pca_n_components: 200
+        pca_random_state: 42
+      view1:
+        source: obsm
+        key: feat
+    model:
+      latent_dim: 32
+      sparniche_view1:
+        hidden_dims:
+        - 64
+        - 16
+        num_heads: 1
+        dropout: 0.2
+        dec_cluster_n: 10
+      sparniche:
+        gan_epochs: 80
+        gan_lr: 0.0001
+        gan_discriminator_steps: 1
+        pretrain_epochs: 80
+        lr: 0.01
+        weight_decay: 0.01
+        negative_repeats: 1
+        rec_w: 10.0
+        gcn_w: 0.1
+        self_w: 1.0
+        dec_kl_w: 1.0
+        dec_interval: 20
+        dec_tol: 0.0
+      variant: local_graph_normalized
+      feature_graph_fusion_mode: gated
+      local_graph_mode: normalized

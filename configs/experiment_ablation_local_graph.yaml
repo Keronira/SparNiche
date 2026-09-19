@@ -1,0 +1,9 @@
+datasets: [dlpfc]
+seeds: [2024, 2025, 2026]
+grid:
+  model.variant: [local_graph_normalized]
+cases:
+  - name: anchor
+    overrides: {}
+  - name: graph_loss_0
+    overrides: {model.sparniche.gcn_w: 0.0}

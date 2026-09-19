@@ -1,0 +1,34 @@
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Data and generated experiment artifacts
+*.h5ad
+*.h5
+*.hdf5
+*.ckpt
+*.pt
+*.pth
+outputs/
+bench_results/
+results/
+runs/
+plots/
+checkpoints/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,69 @@
+paths:
+  input_h5ad: /root/autodl-fs/data/source18/Animal1_Bregma-0.04.h5ad
+data:
+  label_key: annotation_final
+  n_neighbors: 4
+  preprocessing:
+    enabled: true
+    reuse_existing: true
+    feature_key: feat
+    input_kind: normalized
+    hvg_enabled: false
+    min_cells: 50
+    min_counts: 10
+    n_top_genes: 2000
+    hvg_flavor: seurat_v3
+    normalize_total: true
+    target_sum: 1000000.0
+    scale: false
+    pca_enabled: true
+    pca_n_components: 32
+    pca_random_state: 42
+  view1:
+    source: obsm
+    key: feat
+model:
+  variant: local_graph_normalized
+  local_graph_mode: normalized
+  latent_dim: 32
+  sparniche_view1:
+    hidden_dims:
+    - 64
+    - 16
+    num_heads: 1
+    dropout: 0.2
+    dec_cluster_n: 10
+    attention_mode: global
+    attention_neighbors: null
+    attention_chunk_size: null
+  sparniche:
+    gan_epochs: 40
+    gan_lr: 0.0001
+    gan_discriminator_steps: 1
+    pretrain_epochs: 80
+    lr: 0.01
+    weight_decay: 0.01
+    negative_repeats: 1
+    rec_w: 1.0
+    gcn_w: 0.05
+    self_w: 1.0
+    dec_kl_w: 10.0
+    dec_interval: 20
+    dec_tol: 0.0
+  local_graph_hops: 0
+  residual_gcn_layers: 0
+  feature_graph_fusion_mode: gated
+benchmark:
+  external_only: true
+training:
+  epochs: 200
+  checkpoint_every: 10
+  seed: 2023
+  device: auto
+evaluation:
+  sparniche_leiden_seed: 2023
+  leiden_min_resolution: 0.01
+  leiden_max_resolution: 1.99
+  leiden_cluster_lower_offset: 0
+  n_clusters: 0
+  kmeans_n_init: 20
