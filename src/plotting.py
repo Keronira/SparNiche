@@ -33,6 +33,7 @@ def _shared_baseline_plotter():
     here = Path(__file__).resolve()
     for directory in (here.parents[2] / "baselines", here.parents[3] / "baselines", Path("D:/baselines")):
         if (directory / "baseline_common.py").is_file():
+            sys.path.insert(0, str(directory.parent))
             sys.path.insert(0, str(directory))
             return importlib.import_module("baseline_common")
     return None
@@ -82,7 +83,7 @@ def _estimate_spot_diameter(coordinates: np.ndarray) -> float:
     distances = distances[np.isfinite(distances) & (distances > 0)]
     if distances.size == 0:
         return 1.0
-    return float(max(1.0, np.median(distances) * 0.85))
+    return float(np.median(distances) * 0.85)
 
 
 def _coerce_spatial_plot_metadata(adata, coordinates: np.ndarray) -> float:

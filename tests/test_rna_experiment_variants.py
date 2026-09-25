@@ -1,3 +1,5 @@
+import json
+import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -26,6 +28,42 @@ from scripts.run_experiments import EXPERIMENT_CONFIGS, resolved_config
 
 
 class RNAExperimentVariantTests(unittest.TestCase):
+    def test_h5ad_export_serializes_nested_leiden_candidates(self):
+        from src.runner import _write_h5ad_with_serializable_leiden_audit
+
+        adata = anndata.AnnData(X=np.ones((2, 1), dtype=np.float32))
+        candidates = [
+            {
+                "resolution": 0.12,
+                "cluster_count": 7,
+                "per_layer_iou": {"Layer4": 0.5, "Layer6": 0.25},
+                "eligible": True,
+                "selected": True,
+            },
+            {
+                "resolution": 0.13,
+                "cluster_count": 8,
+                "eligible": True,
+                "selected": False,
+            },
+        ]
+        adata.uns["sparniche_leiden_search"] = {
+            "selected_resolution": 0.12,
+            "candidates": candidates,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "trained.h5ad"
+            _write_h5ad_with_serializable_leiden_audit(adata, output_path)
+            restored = anndata.read_h5ad(output_path)
+
+        stored_audit = restored.uns["sparniche_leiden_search"]
+        self.assertNotIn("candidates", stored_audit)
+        self.assertEqual(json.loads(stored_audit["candidates_json"]), candidates)
+        self.assertEqual(
+            adata.uns["sparniche_leiden_search"]["candidates"], candidates
+        )
+
     def test_rna_ablation_is_not_a_public_experiment_set(self):
         self.assertNotIn("rna_ablation", EXPERIMENT_CONFIGS)
 
@@ -70,6 +108,7 @@ class RNAExperimentVariantTests(unittest.TestCase):
             leiden_min_resolution=6.0,
             leiden_max_resolution=8.0,
             leiden_cluster_lower_offset=0,
+            leiden_cluster_upper_offset=2,
         )
         resolved = resolved_config(
             base,
@@ -81,6 +120,7 @@ class RNAExperimentVariantTests(unittest.TestCase):
         self.assertEqual(resolved["evaluation"]["leiden_min_resolution"], 6.0)
         self.assertEqual(resolved["evaluation"]["leiden_max_resolution"], 8.0)
         self.assertEqual(resolved["evaluation"]["leiden_cluster_lower_offset"], 0)
+        self.assertEqual(resolved["evaluation"]["leiden_cluster_upper_offset"], 2)
 
     def test_gated_fusion_keeps_embedding_contract(self):
         encoder = SparNicheEncoder(200, fusion_mode="gated")
@@ -131,7 +171,7 @@ class RNAExperimentVariantTests(unittest.TestCase):
         self.assertEqual(labels.tolist(), ["0", "1", "0"])
         self.assertIsNone(_cached_leiden_labels({}, 108))
 
-    def test_resolution_grid_prefers_highest_ari_within_k_plus_three(self):
+    def test_resolution_grid_excludes_k_minus_one_and_k_plus_three(self):
         records = [
             {
                 "resolution": 0.04,
@@ -149,8 +189,15 @@ class RNAExperimentVariantTests(unittest.TestCase):
                 "labels": list("aabbccddee"),
             },
         ]
-        selected = _select_resolution_candidate(records, 5, list("aabbccddee"))
-        self.assertEqual(selected["resolution"], 0.16)
+        selected = _select_resolution_candidate(
+            records,
+            5,
+            list("aabbccddee"),
+            cluster_lower_offset=0,
+            cluster_upper_offset=2,
+        )
+        self.assertEqual(selected["resolution"], 0.04)
+        self.assertFalse(selected["window_fallback"])
 
     def test_resolution_grid_can_require_at_least_target_clusters(self):
         records = [
@@ -158,9 +205,39 @@ class RNAExperimentVariantTests(unittest.TestCase):
             {"resolution": 7.52, "cluster_count": 82, "labels": list("abcd")},
         ]
         selected = _select_resolution_candidate(
-            records, 81, list("aabb"), cluster_lower_offset=0
+            records,
+            81,
+            list("aabb"),
+            cluster_lower_offset=0,
+            cluster_upper_offset=2,
         )
         self.assertEqual(selected["cluster_count"], 82)
+
+    def test_leiden_selection_uses_ari_best_within_window(self):
+        truth = np.asarray(list("AAAABBBBCCCC"))
+        records = [
+            {
+                "resolution": 0.2,
+                "cluster_count": 3,
+                "labels": np.asarray(list("XXZZYYYYYYYY")),
+            },
+            {
+                "resolution": 0.3,
+                "cluster_count": 3,
+                "labels": np.asarray(list("XXXYYYYZZZZX")),
+            },
+        ]
+        selected = _select_resolution_candidate(
+            records,
+            3,
+            truth,
+            cluster_lower_offset=0,
+            cluster_upper_offset=2,
+        )
+        self.assertEqual(selected["resolution"], 0.2)
+        self.assertIn("ari", selected)
+        self.assertNotIn("layer_recovery_rate", selected)
+        self.assertNotIn("worst_layer_iou", selected)
 
     def test_resolution_grid_falls_back_to_closest_count(self):
         records = [
@@ -171,8 +248,8 @@ class RNAExperimentVariantTests(unittest.TestCase):
         self.assertEqual(selected["resolution"], 0.8)
 
     def test_leiden_search_interrupt_threshold(self):
-        self.assertFalse(_should_interrupt_leiden_search(10, 7))
-        self.assertTrue(_should_interrupt_leiden_search(11, 7))
+        self.assertFalse(_should_interrupt_leiden_search(9, 7, 2))
+        self.assertTrue(_should_interrupt_leiden_search(10, 7, 2))
 
     def test_leiden_resolution_grid_uses_configured_upper_bound(self):
         self.assertEqual(_leiden_resolution_midpoints(0.01, 0.03), [1, 2, 3])
@@ -183,9 +260,9 @@ class RNAExperimentVariantTests(unittest.TestCase):
         self.assertEqual(_leiden_resolution_probe_points(1, 2), [2, 1])
 
     def test_leiden_midpoint_direction_uses_cluster_window(self):
-        self.assertEqual(_leiden_search_direction(5, 7, -1), "higher")
-        self.assertEqual(_leiden_search_direction(11, 7, -1), "lower")
-        self.assertEqual(_leiden_search_direction(10, 7, -1), "midpoint")
+        self.assertEqual(_leiden_search_direction(6, 7, 0, 2), "higher")
+        self.assertEqual(_leiden_search_direction(10, 7, 0, 2), "lower")
+        self.assertEqual(_leiden_search_direction(9, 7, 0, 2), "midpoint")
 
     def test_leiden_directional_bounds_start_on_target_side(self):
         self.assertEqual(_leiden_directional_bounds(1, 5, 9, "higher"), (6, 9))
@@ -194,11 +271,11 @@ class RNAExperimentVariantTests(unittest.TestCase):
 
     def test_leiden_directional_bounds_update_after_midpoint_probe(self):
         self.assertEqual(
-            _leiden_update_directional_bounds(6, 9, 7, 5, 7, "higher", -1),
+            _leiden_update_directional_bounds(6, 9, 7, 5, 7, "higher", 0, 2),
             (8, 9),
         )
         self.assertEqual(
-            _leiden_update_directional_bounds(1, 4, 3, 11, 7, "lower", -1),
+            _leiden_update_directional_bounds(1, 4, 3, 11, 7, "lower", 0, 2),
             (1, 2),
         )
 
@@ -227,7 +304,7 @@ class RNAExperimentVariantTests(unittest.TestCase):
             )
 
         self.assertEqual(len(np.unique(labels)), 12)
-        valid_window = {round(value / 100, 2) for value in range(53, 78)}
+        valid_window = {round(value / 100, 2) for value in range(58, 73)}
         self.assertTrue(valid_window.issubset(set(resolutions)))
         self.assertIn(0.75, resolutions)
 

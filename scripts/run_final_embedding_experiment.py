@@ -45,6 +45,9 @@ METRIC_COLUMNS = (
     "fmi",
     "accuracy",
     "macro_f1",
+    "macro_layer_iou",
+    "worst_layer_iou",
+    "layer_recovery_rate",
     "layer_order_score",
     "fidelity",
 )
@@ -246,6 +249,8 @@ def summarize_sets(rows: list[dict[str, Any]], output_path: Path) -> pd.DataFram
     records: list[dict[str, Any]] = []
     for set_name, group in completed.groupby("set_name", sort=True):
         for metric in METRIC_COLUMNS:
+            if metric not in group:
+                continue
             values = pd.to_numeric(group[metric], errors="coerce").dropna()
             if values.empty:
                 continue
@@ -296,8 +301,8 @@ def _full_config(
         "training.seed": int(seed),
         "training.device": str(device),
         "benchmark.external_only": False,
-        "evaluation.leiden_cluster_lower_offset": -1,
-        "evaluation.leiden_cluster_upper_offset": 3,
+        "evaluation.leiden_cluster_lower_offset": 0,
+        "evaluation.leiden_cluster_upper_offset": 2,
     }
     overrides.update(EXPERIMENT_SET_OVERRIDES[set_name])
     return normalize_sparniche_config(apply_overrides(normalize_sparniche_config(base), overrides))

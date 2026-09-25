@@ -18,7 +18,7 @@ from scripts.run_final_embedding_experiment import (
     set_output_dir,
     summarize_sets,
 )
-from src.final_metrics import compute_final_metrics
+from src.final_metrics import compute_final_metrics, compute_layer_recovery_metrics
 
 
 class FinalEmbeddingExperimentTests(unittest.TestCase):
@@ -46,11 +46,29 @@ class FinalEmbeddingExperimentTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["layer_order_score"], 1.0)
         self.assertGreater(metrics["fidelity"], 0.99)
 
-    def test_full_config_keeps_leiden_k_minus_1_to_k_plus_3(self):
+    def test_full_config_uses_leiden_k_to_k_plus_2(self):
         config = _full_config({}, Path("sample.h5ad"), 1234, "cpu")
         self.assertFalse(config["benchmark"]["external_only"])
-        self.assertEqual(config["evaluation"]["leiden_cluster_lower_offset"], -1)
-        self.assertEqual(config["evaluation"]["leiden_cluster_upper_offset"], 3)
+        self.assertEqual(config["evaluation"]["leiden_cluster_lower_offset"], 0)
+        self.assertEqual(config["evaluation"]["leiden_cluster_upper_offset"], 2)
+        self.assertNotIn("leiden_selection_strategy", config["evaluation"])
+
+    def test_layer_iou_allows_pure_oversegmentation(self):
+        truth = np.asarray(["Layer3"] * 4 + ["Layer4"] * 4)
+        predicted = np.asarray(["a", "a", "b", "b", "c", "c", "c", "c"])
+        metrics = compute_layer_recovery_metrics(truth, predicted)
+        self.assertEqual(metrics["per_layer_iou"], {"Layer3": 1.0, "Layer4": 1.0})
+        self.assertAlmostEqual(metrics["macro_layer_iou"], 1.0)
+        self.assertAlmostEqual(metrics["worst_layer_iou"], 1.0)
+        self.assertAlmostEqual(metrics["layer_recovery_rate"], 1.0)
+
+    def test_layer_iou_exposes_merged_layer(self):
+        truth = np.asarray(["Layer3", "Layer3", "Layer4", "Layer4"])
+        predicted = np.asarray(["merged"] * 4)
+        metrics = compute_layer_recovery_metrics(truth, predicted)
+        self.assertEqual(metrics["per_layer_iou"]["Layer4"], 0.0)
+        self.assertEqual(metrics["worst_layer_iou"], 0.0)
+        self.assertEqual(metrics["layer_recovery_rate"], 0.5)
 
     def test_screening_registry_has_fifteen_deduplicated_sets(self):
         expected = {

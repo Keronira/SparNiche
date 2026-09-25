@@ -1,4 +1,7 @@
 model:
   latent_dim: 64
+  sparniche_view1:
+    attention_neighbors: 12
+    attention_chunk_size: 4096
   sparniche:
     lr: 0.005

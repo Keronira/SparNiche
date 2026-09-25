@@ -35,15 +35,13 @@ class SingleViewContractTests(unittest.TestCase):
         self.assertEqual(tuple(features.shape), (4, 3))
         np.testing.assert_array_equal(features.numpy(), adata.obsm["feat"])
 
-    def test_model_constructor_and_forward_are_single_view(self) -> None:
+    def test_model_constructor_and_forward_keep_single_view_default(self) -> None:
         constructor = inspect.signature(SparNiche.__init__)
         forward = inspect.signature(SparNiche.forward)
         self.assertIn("input_dim", constructor.parameters)
         self.assertNotIn("input_dims", constructor.parameters)
-        self.assertEqual(
-            [name for name in forward.parameters if name != "self"],
-            ["view1", "neighbor_idx"],
-        )
+        self.assertFalse(constructor.parameters["double_view"].default)
+        self.assertIsNone(forward.parameters["view2"].default)
 
     def test_model_forward_returns_one_embedding_per_spot(self) -> None:
         model = SparNiche(

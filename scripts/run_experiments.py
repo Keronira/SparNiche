@@ -40,6 +40,7 @@ DEFAULT_DATA_ROOT = Path("/root/autodl-fs/data")
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "config.yaml"
 SOURCE_CONFIGS = {
     "source24": PROJECT_ROOT / "configs" / "source24.yaml",
+    "source26": PROJECT_ROOT / "configs" / "source26.yaml",
 }
 
 
@@ -175,9 +176,23 @@ def parse_args() -> argparse.Namespace:
         "--leiden-cluster-lower-offset",
         type=int,
         choices=(-1, 0),
-        help="Allow K-1 clusters (-1, default) or require at least K clusters (0).",
+        help="Override the lower edge relative to K; the default is K (offset 0).",
+    )
+    parser.add_argument(
+        "--leiden-cluster-upper-offset",
+        type=int,
+        choices=(0, 1, 2, 3),
+        help="Override the upper edge relative to K; the default is K+2.",
     )
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--double-view", action="store_true",
+        help="Use aligned ADT or ATAC in adata.obsm; RNA-only samples remain single-view.",
+    )
+    parser.add_argument(
+        "--view2-key", default="auto",
+        help="AnnData obsm key for view2 when --double-view is set (default: auto: adt, then atac).",
+    )
     parser.add_argument(
         "--config",
         type=Path,
@@ -331,6 +346,10 @@ def input_paths_from_source(
     return paths[: int(max_samples)] if max_samples else paths
 
 
+def sample_run_id(input_path: Path, base_run_id: str) -> str:
+    return f"{Path(input_path).stem}--{base_run_id}"
+
+
 def load_run_config(config_path: Path | None, input_path: Path) -> dict:
     """Load an explicit config or the shared default with a source overlay."""
     if config_path is not None:
@@ -364,6 +383,10 @@ def resolved_config(
         overrides["training.epochs"] = int(args.epochs)
     if args.attention_mode is not None:
         overrides["model.sparniche_view1.attention_mode"] = args.attention_mode
+    if getattr(args, "double_view", False):
+        overrides["model.double_view"] = True
+        overrides["data.view2.source"] = "obsm"
+        overrides["data.view2.key"] = args.view2_key
     if getattr(args, "leiden_max_resolution", None) is not None:
         overrides["evaluation.leiden_max_resolution"] = float(
             args.leiden_max_resolution
@@ -375,6 +398,10 @@ def resolved_config(
     if getattr(args, "leiden_cluster_lower_offset", None) is not None:
         overrides["evaluation.leiden_cluster_lower_offset"] = int(
             args.leiden_cluster_lower_offset
+        )
+    if getattr(args, "leiden_cluster_upper_offset", None) is not None:
+        overrides["evaluation.leiden_cluster_upper_offset"] = int(
+            args.leiden_cluster_upper_offset
         )
     return apply_overrides(base, overrides)
 
@@ -497,7 +524,6 @@ def main() -> int:
     if args.max_samples is not None and args.max_samples <= 0:
         raise ValueError("--max-samples must be positive")
     input_paths = input_paths_from_source(args.source, max_samples=args.max_samples)
-    source_is_directory = len(args.source) == 1 and args.source[0].is_dir()
     rows = selected_rows(args)
     if not rows:
         raise ValueError("no runs matched the requested experiment set, variants, and seeds")
@@ -537,11 +563,7 @@ def main() -> int:
             )
             method_root = output_root / dataset_name / method_name
             base_run_id = str(row["run_id"])
-            run_id = (
-                f"{input_path.stem}--{base_run_id}"
-                if source_is_directory
-                else base_run_id
-            )
+            run_id = sample_run_id(input_path, base_run_id)
             run_dir = method_root / "artifacts" / run_id
             config = resolved_config(base, args, row, effective_input, n_clusters)
             config["data"]["preprocessing"]["input_kind"] = input_kind

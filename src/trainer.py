@@ -82,6 +82,7 @@ def _sparniche_losses(
     target_distribution: torch.Tensor | None,
     contrastive_w: float = 0.0,
     contrastive_temperature: float = 0.2,
+    clean_adt: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor]:
     reconstruction = F.mse_loss(aux["reconstruction"], clean_rna)
     graph_mask = aux["graph_mask"].coalesce()
@@ -113,13 +114,16 @@ def _sparniche_losses(
             target_distribution.to(aux["q"].device),
             reduction="mean",
         )
-    return {
+    losses = {
         "reconstruction": reconstruction,
         "graph": graph,
         "self": self_construction,
         "contrastive": contrastive,
         "dec": dec,
     }
+    if clean_adt is not None:
+        losses["adt_reconstruction"] = F.mse_loss(aux["adt_reconstruction"], clean_adt)
+    return losses
 
 
 def set_seed(seed: int) -> None:
@@ -358,14 +362,12 @@ def _prepare_epoch_metrics(
 
 
 def _sparniche_aux(
-    encoder: SparNicheEncoder,
+    model: SparNiche,
     clean_rna: torch.Tensor,
     neighbor_idx: torch.Tensor,
+    clean_adt: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor]:
-    result = encoder(clean_rna, neighbor_idx, return_aux=True)
-    if not isinstance(result, dict):
-        raise TypeError("SparNiche encoder did not return its training outputs")
-    return result
+    return model(clean_rna, neighbor_idx, clean_adt).aux
 
 
 def _initialize_negative_graph_mask(
@@ -398,6 +400,7 @@ def train_tensors(
     output_dir: Path,
     resume: bool = False,
     data_fingerprint: str | None = None,
+    view2: torch.Tensor | None = None,
 ) -> TrainingResult:
     config = normalize_sparniche_config(config)
     training = config.get("training", {})
@@ -413,6 +416,10 @@ def train_tensors(
     set_seed(seed)
     device = _resolve_device(str(training.get("device", "auto")))
     clean_view = view1.float().to(device)
+    double_view = bool(model_config.get("double_view", False))
+    if double_view != (view2 is not None):
+        raise ValueError("double_view and supplied ADT view2 must agree")
+    clean_adt = view2.float().to(device) if view2 is not None else None
     neighbor_idx = neighbor_idx.long().to(device)
 
     model = SparNiche(
@@ -428,6 +435,8 @@ def train_tensors(
         local_graph_normalize=bool(model_config.get("local_graph_normalize", True)),
         residual_gcn_layers=int(model_config.get("residual_gcn_layers", 1)),
         mlp_layers=int(model_config.get("mlp_layers", 2)),
+        double_view=double_view,
+        view2_dim=clean_adt.shape[1] if clean_adt is not None else None,
     ).to(device)
     sparniche_encoder = model.encoder
     model.configure_graph(sparniche_graph)
@@ -524,7 +533,7 @@ def train_tensors(
                 )
 
     sparniche_optimizer = torch.optim.Adam(
-        sparniche_encoder.parameters(),
+        model.parameters(),
         lr=float(sparniche_config.get("lr", 0.01)),
         weight_decay=float(sparniche_config.get("weight_decay", 0.01)),
     )
@@ -540,6 +549,9 @@ def train_tensors(
     contrastive_w = float(sparniche_config.get("contrastive_w", 0.0))
     contrastive_temperature = float(sparniche_config.get("contrastive_temperature", 0.2))
     dec_w = float(sparniche_config.get("dec_kl_w", 1.0))
+    adt_w = float(sparniche_config.get("adt_rec_w", 1.0))
+    if adt_w < 0:
+        raise ValueError("adt_rec_w must be non-negative")
 
     non_dec_epochs = int(sparniche_config.get("pretrain_epochs", 80))
     non_dec_start = _stage_start(checkpoint, "non_dec")
@@ -553,7 +565,7 @@ def train_tensors(
         for epoch in progress:
             model.train()
             sparniche_optimizer.zero_grad(set_to_none=True)
-            aux = _sparniche_aux(sparniche_encoder, clean_view, neighbor_idx)
+            aux = _sparniche_aux(model, clean_view, neighbor_idx, clean_adt)
             if not graph_mask_ready:
                 _initialize_negative_graph_mask(
                     sparniche_encoder,
@@ -563,13 +575,15 @@ def train_tensors(
                 _refresh_graph_logits(sparniche_encoder, aux)
                 graph_mask_ready = True
             components = _sparniche_losses(
-                aux, clean_view, None, contrastive_w, contrastive_temperature
+                aux, clean_view, None, contrastive_w, contrastive_temperature,
+                clean_adt=clean_adt,
             )
             total = (
                 rec_w * components["reconstruction"]
                 + gcn_w * components["graph"]
                 + self_w * components["self"]
                 + components["contrastive"]
+                + adt_w * components.get("adt_reconstruction", 0.0)
             )
             total.backward()
             sparniche_optimizer.step()
@@ -616,7 +630,7 @@ def train_tensors(
     elif dec_start is not None:
         model.eval()
         with torch.no_grad():
-            initial_aux = _sparniche_aux(sparniche_encoder, clean_view, neighbor_idx)
+            initial_aux = _sparniche_aux(model, clean_view, neighbor_idx, clean_adt)
         cluster_count = sparniche_encoder.dec_cluster_n
         if clean_view.shape[0] < cluster_count:
             raise ValueError(
@@ -651,9 +665,10 @@ def train_tensors(
                 model.eval()
                 with torch.no_grad():
                     update_aux = _sparniche_aux(
-                        sparniche_encoder,
+                        model,
                         clean_view,
                         neighbor_idx,
+                        clean_adt,
                     )
                 target_distribution = _sparniche_target_distribution(
                     update_aux["q"].detach()
@@ -669,16 +684,18 @@ def train_tensors(
                 raise RuntimeError("SparNiche DEC target distribution was not initialized")
             model.train()
             sparniche_optimizer.zero_grad(set_to_none=True)
-            aux = _sparniche_aux(sparniche_encoder, clean_view, neighbor_idx)
+            aux = _sparniche_aux(model, clean_view, neighbor_idx, clean_adt)
             components = _sparniche_losses(
                 aux, clean_view, target_distribution,
                 contrastive_w, contrastive_temperature,
+                clean_adt=clean_adt,
             )
             total = (
                 gcn_w * components["graph"]
                 + dec_w * components["dec"]
                 + rec_w * components["reconstruction"]
                 + components["contrastive"]
+                + adt_w * components.get("adt_reconstruction", 0.0)
             )
             total.backward()
             sparniche_optimizer.step()
@@ -708,7 +725,7 @@ def train_tensors(
 
     model.eval()
     with torch.no_grad():
-        final_output = model(clean_view, neighbor_idx)
+        final_output = model(clean_view, neighbor_idx, clean_adt)
     last_epoch = int(training.get("epochs", 550))
     _save_checkpoint(
         checkpoint_path,

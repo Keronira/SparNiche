@@ -6,7 +6,7 @@
 | --- | --- |
 | RNA preprocessing | filter genes/spots, normalize to `1e6`, HVG-2000, scale, PCA-200 |
 | Spatial graph | 12 nearest neighbors, symmetric normalization |
-| Attention | `spatial_local`, 12 neighbors, chunk size 4096 |
+| Attention | `spatial_local`, neighbor/chunk settings left `null` by default |
 | Latent dimension | 32 |
 | Internal RNA/graph fusion | gated |
 | Training | 80 GAN + 80 non-DEC + 550 DEC epochs |
@@ -14,9 +14,10 @@
 | Labels | `adata.obs["annotation_final"]` |
 | Repeats | seeds 1234, 1235, 1236 |
 
-For `source24`, `configs/source24.yaml` overrides the latent dimension to 64
-and the SparNiche learning rate to 0.005. The batch runner applies this overlay
-automatically unless an explicit `--config` path is supplied.
+The global default uses latent dimension 32 and SparNiche learning rate 0.01.
+Source24 keeps a dedicated overlay with latent dimension 64, learning rate
+0.005, 12 attention neighbors, and chunk size 4096. An explicit `--config`
+path remains authoritative.
 
 Ambiguous labels such as `Unknown` are excluded from benchmark scoring. `n_clusters` is inferred from the remaining ground-truth categories unless it is supplied explicitly.
 
@@ -44,7 +45,7 @@ python scripts/run_experiments.py \
 
 ## Leiden prediction
 
-Clustering uses the SparNiche latent embedding. The search first probes the configured lower bound, midpoint, and upper bound, then narrows by midpoint probes until the observed cluster count reaches the target window. It traverses the relevant local interval and selects the best cached result. The default accepted cluster-count window is `K-1` through `K+3`, where `K` is the number of non-ambiguous ground-truth classes. A bounded fallback grid is retained when the directed search cannot enter the target window.
+Clustering uses the SparNiche latent embedding. The search first probes the configured lower bound, midpoint, and upper bound, then narrows by midpoint probes until the observed cluster count reaches the target window. It traverses the relevant local interval and selects the candidate with the highest ARI. The default accepted cluster-count window is `K` through `K+2`, where `K` is the number of non-ambiguous ground-truth classes. If the window is not reached, the same ARI rule is applied to the evaluated fallback candidates.
 
 ## Embedding parameter experiments
 

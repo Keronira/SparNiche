@@ -20,6 +20,31 @@ def _encoder(**kwargs) -> SparNicheEncoder:
 
 
 class SparNicheAttentionTest(unittest.TestCase):
+    def test_dec_cluster_count_accepts_positive_configured_values(self) -> None:
+        for cluster_count in (10, 12, 14):
+            encoder = SparNicheEncoder(
+                input_dim=8,
+                latent_dim=32,
+                hidden_dims=(64, 16),
+                num_heads=1,
+                dropout=0.2,
+                dec_cluster_n=cluster_count,
+            )
+            self.assertEqual(encoder.dec_cluster_n, cluster_count)
+            self.assertEqual(encoder.cluster_layer.shape, (cluster_count, 32))
+
+    def test_dec_cluster_count_rejects_non_positive_values(self) -> None:
+        for cluster_count in (0, -1):
+            with self.assertRaisesRegex(ValueError, "dec_cluster_n"):
+                SparNicheEncoder(
+                    input_dim=8,
+                    latent_dim=32,
+                    hidden_dims=(64, 16),
+                    num_heads=1,
+                    dropout=0.2,
+                    dec_cluster_n=cluster_count,
+                )
+
     def test_spatial_local_replaces_null_defaults_from_base_config(self) -> None:
         resolved = _resolve_sparniche_attention_config(
             {"attention_mode": "spatial_local", "attention_neighbors": None, "attention_chunk_size": None},

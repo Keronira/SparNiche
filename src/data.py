@@ -9,6 +9,8 @@ import scanpy as sc
 import torch
 from scipy import sparse
 from sklearn.decomposition import PCA
+from sklearn.decomposition import TruncatedSVD
+from sklearn.feature_extraction.text import TfidfTransformer
 from sklearn.neighbors import NearestNeighbors
 
 
@@ -418,6 +420,47 @@ def resolve_view1(
     )
 
 
+def resolve_view2_key(adata, data_config: dict[str, Any]) -> str | None:
+    view_config = data_config.get("view2", {"source": "obsm", "key": "adt"})
+    if view_config.get("source", "obsm") != "obsm":
+        raise ValueError("view2 must be stored in adata.obsm")
+    key = str(view_config.get("key", "adt"))
+    if key == "auto":
+        return next((candidate for candidate in ("adt", "atac") if candidate in adata.obsm), None)
+    return key
+
+
+def resolve_view2(adata, data_config: dict[str, Any]) -> torch.Tensor:
+    """Read ADT or reduce sparse ATAC without densifying its peak matrix."""
+    view_config = data_config.get("view2", {"source": "obsm", "key": "adt"})
+    key = resolve_view2_key(adata, data_config)
+    if key is None:
+        raise KeyError("no ADT or ATAC matrix found in adata.obsm")
+    if key == "atac":
+        matrix = adata.obsm[key]
+        if not sparse.issparse(matrix):
+            matrix = sparse.csr_matrix(matrix)
+        if matrix.shape[0] != adata.n_obs or matrix.shape[1] < 2:
+            raise ValueError("ATAC view2 must align with spots and contain at least two peaks")
+        if matrix.data.size and (not np.isfinite(matrix.data).all() or (matrix.data < 0).any()):
+            raise ValueError("ATAC view2 must contain finite non-negative values")
+        components = min(int(view_config.get("atac_n_components", 64)), min(matrix.shape) - 1)
+        if components < 1:
+            raise ValueError("ATAC SVD requires at least one component")
+        tfidf = TfidfTransformer().fit_transform(matrix.tocsr())
+        reduced = TruncatedSVD(n_components=components, random_state=42).fit_transform(tfidf)
+        values = torch.from_numpy(np.asarray(reduced, dtype=np.float32))
+    else:
+        configured = {**view_config, "source": "obsm", "key": key}
+        values = _resolve_view(adata, configured).float()
+        if values.shape[1] == 0 or (values < 0).any():
+            raise ValueError("ADT view2 must contain non-negative marker values")
+        values = torch.log1p(values)
+    mean = values.mean(dim=0, keepdim=True)
+    scale = values.std(dim=0, unbiased=False, keepdim=True).clamp_min(1e-6)
+    return (values - mean) / scale
+
+
 def _update_array_fingerprint(digest, values: Any) -> None:
     if isinstance(values, torch.Tensor):
         array = values.detach().cpu().contiguous().numpy()
@@ -432,6 +475,7 @@ def data_fingerprint(
     adata,
     features: torch.Tensor | None = None,
     data_config: dict[str, Any] | None = None,
+    view2: torch.Tensor | None = None,
 ) -> str:
     digest = hashlib.sha256()
     digest.update(str(tuple(adata.shape)).encode("utf-8"))
@@ -450,6 +494,8 @@ def data_fingerprint(
         else torch.from_numpy(dense_matrix(adata.X))
     )
     _update_array_fingerprint(digest, selected_features)
+    if view2 is not None:
+        _update_array_fingerprint(digest, view2)
     config = data_config or {}
     digest.update(
         json.dumps(config, sort_keys=True, separators=(",", ":"), default=str).encode(

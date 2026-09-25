@@ -81,6 +81,54 @@ def _layer_ordinal(label: object) -> float:
     return float("nan")
 
 
+def compute_layer_recovery_metrics(
+    labels: np.ndarray,
+    predicted: np.ndarray,
+    *,
+    recovery_threshold: float = 0.5,
+) -> dict[str, object]:
+    """Measure class-mask recovery while allowing pure over-segmentation.
+
+    Each predicted cluster is assigned to the true layer with which it has the
+    largest overlap. Multiple predicted clusters may therefore reconstruct one
+    layer, while one merged cluster can never reconstruct multiple layers.
+    """
+    labels = np.asarray(labels).astype(str)
+    predicted = np.asarray(predicted).astype(str)
+    if labels.ndim != 1 or predicted.ndim != 1 or labels.shape != predicted.shape:
+        raise ValueError("labels and predicted must be matching one-dimensional arrays")
+    if labels.size == 0:
+        raise ValueError("at least one labeled spot is required")
+    threshold = float(recovery_threshold)
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("recovery_threshold must be between zero and one")
+
+    true_layers = np.unique(labels)
+    reconstructed = np.empty(labels.shape, dtype=object)
+    for cluster in np.unique(predicted):
+        cluster_mask = predicted == cluster
+        overlap = np.asarray(
+            [np.count_nonzero(cluster_mask & (labels == layer)) for layer in true_layers]
+        )
+        reconstructed[cluster_mask] = true_layers[int(np.argmax(overlap))]
+
+    per_layer_iou: dict[str, float] = {}
+    for layer in true_layers:
+        truth_mask = labels == layer
+        predicted_mask = reconstructed == layer
+        intersection = int(np.count_nonzero(truth_mask & predicted_mask))
+        union = int(np.count_nonzero(truth_mask | predicted_mask))
+        per_layer_iou[str(layer)] = float(intersection / union) if union else 0.0
+    values = np.asarray(list(per_layer_iou.values()), dtype=float)
+    return {
+        "per_layer_iou": per_layer_iou,
+        "macro_layer_iou": float(values.mean()),
+        "worst_layer_iou": float(values.min()),
+        "layer_recovery_rate": float(np.mean(values >= threshold)),
+        "layer_recovery_threshold": threshold,
+    }
+
+
 def compute_final_metrics(
     embedding: np.ndarray,
     labels: np.ndarray,
@@ -104,6 +152,7 @@ def compute_final_metrics(
     if predicted.ndim != 1 or predicted.shape[0] != labels.size:
         raise ValueError("predicted labels must match the number of spots")
     aligned = _hungarian_alignment(labels, predicted)
+    layer_recovery = compute_layer_recovery_metrics(labels, predicted)
     distance_spearman = _pairwise_spearman(embedding, spatial, seed=int(seed))
     overlap = _neighbor_overlap(embedding, spatial, int(n_neighbors))
     fidelity = float(np.mean([overlap, (distance_spearman + 1.0) / 2.0]))
@@ -122,6 +171,9 @@ def compute_final_metrics(
         "fmi": float(fowlkes_mallows_score(labels, predicted)),
         "accuracy": float(accuracy_score(labels, aligned)),
         "macro_f1": float(f1_score(labels, aligned, average="macro", zero_division=0)),
+        "macro_layer_iou": float(layer_recovery["macro_layer_iou"]),
+        "worst_layer_iou": float(layer_recovery["worst_layer_iou"]),
+        "layer_recovery_rate": float(layer_recovery["layer_recovery_rate"]),
         "layer_order_score": layer_order,
         "fidelity": fidelity,
         "embedding_spatial_neighbor_overlap": overlap,

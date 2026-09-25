@@ -26,6 +26,7 @@ data:
     key: feat
 
 model:
+  double_view: false
   variant: local_graph_normalized
   feature_graph_fusion_mode: gated
   local_graph_mode: normalized
@@ -37,8 +38,8 @@ model:
     dec_cluster_n: 10
     # Full SparNiche reference: normalized local graph + spatial-local attention.
     attention_mode: spatial_local
-    attention_neighbors: 12
-    attention_chunk_size: 4096
+    attention_neighbors: null
+    attention_chunk_size: null
   sparniche:
     gan_epochs: 80
     gan_lr: 0.0001
@@ -48,6 +49,7 @@ model:
     weight_decay: 0.01
     negative_repeats: 1
     rec_w: 10.0
+    adt_rec_w: 1.0
     gcn_w: 0.1
     self_w: 1.0
     dec_kl_w: 1.0
@@ -67,6 +69,7 @@ evaluation:
   sparniche_leiden_seed: 2023
   leiden_min_resolution: 0.01
   leiden_max_resolution: 1.99
-  leiden_cluster_lower_offset: -1
+  leiden_cluster_lower_offset: 0
+  leiden_cluster_upper_offset: 2
   n_clusters: 0
   kmeans_n_init: 20

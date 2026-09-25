@@ -32,7 +32,7 @@ from .trainer import _checkpoint_config_identity
 
 warnings.filterwarnings("ignore")
 
-LEIDEN_CLUSTER_UPPER_OFFSET = 3
+DEFAULT_LEIDEN_CLUSTER_UPPER_OFFSET = 2
 LEIDEN_TRAVERSAL_MISS_TOLERANCE = 3
 
 
@@ -49,39 +49,56 @@ def _select_resolution_candidate(
     target_clusters: int,
     truth,
     *,
-    cluster_lower_offset: int = -1,
+    cluster_lower_offset: int = 0,
+    cluster_upper_offset: int = DEFAULT_LEIDEN_CLUSTER_UPPER_OFFSET,
 ) -> dict:
-    """Choose the best ARI candidate within the permitted cluster-count range."""
+    """Choose the ARI-best candidate within the configured cluster-count range."""
     target = int(target_clusters)
     eligible = [
         row
         for row in records
         if target + int(cluster_lower_offset)
         <= int(row["cluster_count"])
-        <= target + LEIDEN_CLUSTER_UPPER_OFFSET
+        <= target + int(cluster_upper_offset)
     ]
-    if eligible and truth is not None:
+    pool = eligible if eligible else records
+    if truth is not None:
         truth_values = np.asarray(truth).astype(str)
-        for row in eligible:
-            row["ari"] = float(adjusted_rand_score(truth_values, np.asarray(row["labels"]).astype(str)))
-            row["nmi"] = float(normalized_mutual_info_score(truth_values, np.asarray(row["labels"]).astype(str)))
-        return max(
-            eligible,
+        for row in pool:
+            predicted = np.asarray(row["labels"]).astype(str)
+            row["ari"] = float(adjusted_rand_score(truth_values, predicted))
+            row["nmi"] = float(normalized_mutual_info_score(truth_values, predicted))
+        selected = max(
+            pool,
             key=lambda row: (
                 row["ari"],
+                row["nmi"],
                 -abs(int(row["cluster_count"]) - target),
                 -float(row["resolution"]),
             ),
         )
-    pool = eligible if eligible else records
-    return min(pool, key=lambda row: (abs(int(row["cluster_count"]) - target), float(row["resolution"])))
+        selected["window_fallback"] = not bool(eligible)
+        return selected
+    selected = min(
+        pool,
+        key=lambda row: (
+            abs(int(row["cluster_count"]) - target),
+            float(row["resolution"]),
+        ),
+    )
+    selected["window_fallback"] = not bool(eligible)
+    return selected
 
 
-def _should_interrupt_leiden_search(cluster_count: int, target_clusters: int) -> bool:
+def _should_interrupt_leiden_search(
+    cluster_count: int,
+    target_clusters: int,
+    cluster_upper_offset: int = DEFAULT_LEIDEN_CLUSTER_UPPER_OFFSET,
+) -> bool:
     """Stop scanning when the current partition exceeds the cluster-count window."""
     return (
         int(cluster_count)
-        > int(target_clusters) + LEIDEN_CLUSTER_UPPER_OFFSET
+        > int(target_clusters) + int(cluster_upper_offset)
     )
 
 
@@ -111,11 +128,12 @@ def _leiden_resolution_probe_points(minimum: int, maximum: int) -> list[int]:
 def _leiden_search_direction(
     midpoint_clusters: int,
     target_clusters: int,
-    cluster_lower_offset: int = -1,
+    cluster_lower_offset: int = 0,
+    cluster_upper_offset: int = DEFAULT_LEIDEN_CLUSTER_UPPER_OFFSET,
 ) -> str:
-    """Infer which half can contain K-1..K+3 from the midpoint count."""
+    """Infer which half can contain the configured cluster-count window."""
     lower = int(target_clusters) + int(cluster_lower_offset)
-    upper = int(target_clusters) + LEIDEN_CLUSTER_UPPER_OFFSET
+    upper = int(target_clusters) + int(cluster_upper_offset)
     clusters = int(midpoint_clusters)
     if clusters < lower:
         return "higher"
@@ -150,7 +168,8 @@ def _leiden_update_directional_bounds(
     probe_clusters: int,
     target_clusters: int,
     direction: str,
-    cluster_lower_offset: int = -1,
+    cluster_lower_offset: int = 0,
+    cluster_upper_offset: int = DEFAULT_LEIDEN_CLUSTER_UPPER_OFFSET,
 ) -> tuple[int, int]:
     """Update a directional interval after one midpoint probe."""
     lower = int(lower)
@@ -158,7 +177,7 @@ def _leiden_update_directional_bounds(
     probe = int(probe)
     clusters = int(probe_clusters)
     target_lower = int(target_clusters) + int(cluster_lower_offset)
-    target_upper = int(target_clusters) + LEIDEN_CLUSTER_UPPER_OFFSET
+    target_upper = int(target_clusters) + int(cluster_upper_offset)
     if direction == "higher":
         if clusters < target_lower:
             return probe + 1, upper
@@ -236,7 +255,10 @@ def _file_sha256(path: Path) -> str:
 def _validate_completed_run(
     run_dir: Path, resolved: dict[str, Any], status: dict[str, Any]
 ) -> None:
-    missing = [name for name in REQUIRED_RUN_ARTIFACTS if not (run_dir / name).is_file()]
+    required = REQUIRED_RUN_ARTIFACTS
+    if not bool(resolved.get("benchmark", {}).get("write_h5ad", True)):
+        required = tuple(name for name in required if name != "trained.h5ad")
+    missing = [name for name in required if not (run_dir / name).is_file()]
     if missing:
         raise RuntimeError(
             "completed run is missing required artifacts: " + ", ".join(missing)
@@ -265,7 +287,8 @@ def _leiden_labels(
     label_key: str | None = None,
     min_resolution: float = 0.01,
     max_resolution: float = 1.99,
-    cluster_lower_offset: int = -1,
+    cluster_lower_offset: int = 0,
+    cluster_upper_offset: int = DEFAULT_LEIDEN_CLUSTER_UPPER_OFFSET,
 ) -> np.ndarray:
     """Probe bounds, then run at most two directional midpoint refinements."""
     representation_key = "_sparniche_leiden_embedding"
@@ -291,7 +314,8 @@ def _leiden_labels(
         f"[EVAL] Leiden resolution search: target_clusters={target}, "
         "strategy=probe_then_window_traversal, "
         f"cluster_window=K{int(cluster_lower_offset):+d}.."
-        f"K+{LEIDEN_CLUSTER_UPPER_OFFSET}, "
+        f"K+{int(cluster_upper_offset)}, "
+        "selection=ARI-best-in-window, "
         f"resolution_grid={resolution_midpoints[0] / 100.0:.2f}.."
         f"{resolution_midpoints[-1] / 100.0:.2f} step=0.01, "
         "initial_probes=upper,middle,lower",
@@ -343,7 +367,7 @@ def _leiden_labels(
         return records[-1]
 
     target_lower = target + int(cluster_lower_offset)
-    target_upper = target + LEIDEN_CLUSTER_UPPER_OFFSET
+    target_upper = target + int(cluster_upper_offset)
 
     def in_target_window(cluster_count: int) -> bool:
         return target_lower <= int(cluster_count) <= target_upper
@@ -357,6 +381,7 @@ def _leiden_labels(
         midpoint_record["cluster_count"],
         target,
         cluster_lower_offset=cluster_lower_offset,
+        cluster_upper_offset=cluster_upper_offset,
     )
     valid_seed: int | None = None
     # Only a true midpoint can terminate the continuous midpoint search.
@@ -399,6 +424,7 @@ def _leiden_labels(
             target,
             direction,
             cluster_lower_offset=cluster_lower_offset,
+            cluster_upper_offset=cluster_upper_offset,
         )
         print(
             f"[EVAL] Leiden midpoint round {directional_rounds}: "
@@ -476,6 +502,7 @@ def _leiden_labels(
             target,
             truth[truth_mask],
             cluster_lower_offset=cluster_lower_offset,
+            cluster_upper_offset=cluster_upper_offset,
         )
         selected_index = int(selected["_record_index"])
         selected["labels"] = records[selected_index]["labels"]
@@ -485,6 +512,7 @@ def _leiden_labels(
             target,
             None,
             cluster_lower_offset=cluster_lower_offset,
+            cluster_upper_offset=cluster_upper_offset,
         )
     selected_resolution = float(selected["resolution"])
     print(
@@ -495,6 +523,28 @@ def _leiden_labels(
         flush=True,
     )
     adata.obs[key] = np.asarray(selected["labels"], dtype=str)
+    audit_candidates = []
+    for row in records:
+        candidate = {
+            key_name: value
+            for key_name, value in row.items()
+            if key_name not in {"labels", "per_layer_iou"}
+        }
+        if "per_layer_iou" in row:
+            candidate["per_layer_iou"] = dict(row["per_layer_iou"])
+        candidate["eligible"] = target_lower <= int(row["cluster_count"]) <= target_upper
+        candidate["selected"] = float(row["resolution"]) == selected_resolution
+        audit_candidates.append(candidate)
+    adata.uns["sparniche_leiden_search"] = {
+        "target_clusters": target,
+        "cluster_lower_offset": int(cluster_lower_offset),
+        "cluster_upper_offset": int(cluster_upper_offset),
+        "selection_rule": "ari_best_in_window",
+        "window_fallback": bool(selected.get("window_fallback", False)),
+        "selected_resolution": selected_resolution,
+        "selected_clusters": int(selected["cluster_count"]),
+        "candidates": audit_candidates,
+    }
     print(f"[EVAL] Leiden selected cached result: clusters={selected['cluster_count']}", flush=True)
     return adata.obs[key].astype(str).to_numpy()
 
@@ -531,7 +581,13 @@ def _predict_clusters(
             min_resolution=float(evaluation.get("leiden_min_resolution", 0.01)),
             max_resolution=float(evaluation.get("leiden_max_resolution", 1.99)),
             cluster_lower_offset=int(
-                evaluation.get("leiden_cluster_lower_offset", -1)
+                evaluation.get("leiden_cluster_lower_offset", 0)
+            ),
+            cluster_upper_offset=int(
+                evaluation.get(
+                    "leiden_cluster_upper_offset",
+                    DEFAULT_LEIDEN_CLUSTER_UPPER_OFFSET,
+                )
             ),
         )
     else:
@@ -569,6 +625,31 @@ def _cpu_peak_mb() -> float:
     return float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
 
 
+def _write_h5ad_with_serializable_leiden_audit(
+    adata: anndata.AnnData, output_path: Path
+) -> None:
+    """Write H5AD without passing nested candidate records to h5py."""
+    audit = adata.uns.get("sparniche_leiden_search")
+    if not isinstance(audit, dict) or not isinstance(audit.get("candidates"), list):
+        adata.write_h5ad(output_path)
+        return
+
+    candidates = audit.pop("candidates")
+    missing = object()
+    previous_json = audit.get("candidates_json", missing)
+    audit["candidates_json"] = json.dumps(
+        candidates, ensure_ascii=False, sort_keys=True
+    )
+    try:
+        adata.write_h5ad(output_path)
+    finally:
+        audit["candidates"] = candidates
+        if previous_json is missing:
+            audit.pop("candidates_json", None)
+        else:
+            audit["candidates_json"] = previous_json
+
+
 def _run_external_benchmark(
     artifacts,
     resolved: dict[str, Any],
@@ -604,7 +685,9 @@ def _run_external_benchmark(
             cluster_key="sparniche_cluster",
         )
     if bool(benchmark.get("write_h5ad", True)):
-        artifacts.adata.write_h5ad(run_dir / "trained.h5ad")
+        _write_h5ad_with_serializable_leiden_audit(
+            artifacts.adata, run_dir / "trained.h5ad"
+        )
     status = {
         "state": "completed",
         "started_at": started_at,

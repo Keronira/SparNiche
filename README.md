@@ -9,7 +9,7 @@ SparNiche is a single-view spatial transcriptomics model for spatial-domain disc
 3. Encode RNA features with global or memory-safe spatial-local attention and graph convolutions.
 4. Combine the RNA-feature and graph representations with an internal gate.
 5. Train in three stages: adversarial pretraining, non-DEC reconstruction/graph training, and DEC refinement.
-6. Export the latent embedding and select Leiden labels with the project resolution search (`K-1` to `K+3` clusters by default).
+6. Export the latent embedding and select Leiden labels with the project resolution search (`K` to `K+2` clusters by default).
 
 The word *gate* refers to fusion inside the single RNA/graph encoder. SparNiche has no second modality, image encoder, cross-view expert, or multimodal router.
 
@@ -21,8 +21,15 @@ Each input is one `.h5ad` file.
 - Spatial coordinates: `adata.obsm["spatial"]`, shape `[n_spots, 2]` or wider.
 - Ground-truth labels for benchmark evaluation: `adata.obs["annotation_final"]`.
 - Optional reusable RNA features: `adata.obsm["feat"]`, accepted only when its preprocessing metadata matches the configured contract.
+- Optional ADT matrix: `adata.obsm["adt"]`, aligned by spot with `adata.X`.
 
 Image content in `adata.uns["spatial"]` or `adata.obsm["image_features"]` is ignored.
+
+ADT training is disabled by default (`model.double_view: false`). To enable
+RNA-primary gated fusion and ADT reconstruction, pass `--double-view`; use
+`--view2-key NAME` when the ADT matrix is stored under another `obsm` key.
+Every double-view sample must contain both RNA in `X` and aligned ADT in that
+key. An RNA-only sample should be run without `--double-view`.
 
 ## Installation
 
@@ -46,9 +53,21 @@ python scripts/run_experiments.py \
   --continue-on-error
 ```
 
-When the source directory is named `source24`, the runner automatically merges
-`configs/source24.yaml`; this selects `latent_dim=64` and the SparNiche learning
-rate `0.005`. Passing `--config` explicitly disables this automatic overlay.
+For source30, run S1 with ADT and S2 as RNA-only:
+
+```bash
+python scripts/run_experiments.py --experiment-set single \
+  --source /root/autodl-fs/data/source30/S1.h5ad \
+  --double-view --view2-key adt --device cuda
+python scripts/run_experiments.py --experiment-set single \
+  --source /root/autodl-fs/data/source30/S2.h5ad --device cuda
+```
+
+The shared default configuration uses `latent_dim=32`, a SparNiche learning
+rate of `0.01`, and null local-attention neighbor and chunk settings. Source24
+continues to use its dedicated overlay in `configs/source24.yaml`, which sets
+`latent_dim=64`, `lr=0.005`, `attention_neighbors=12`, and
+`attention_chunk_size=4096`. Passing `--config` disables the automatic overlay.
 
 The default output root is `/root/autodl-fs/bench_results`. Seeds map to stable method directories:
 

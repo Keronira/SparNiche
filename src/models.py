@@ -164,11 +164,12 @@ class SparNicheEncoder(nn.Module):
             raise ValueError("SparNiche num_heads must divide the RNA input dimension")
         if not 0.0 <= float(dropout) < 1.0:
             raise ValueError("SparNiche dropout must be in [0, 1)")
-        if hidden_dims != (64, 16) or int(num_heads) != 1 or int(dec_cluster_n) != 10:
+        if hidden_dims != (64, 16) or int(num_heads) != 1:
             raise ValueError(
-                "SparNiche requires hidden_dims=[64,16], num_heads=1, "
-                "and dec_cluster_n=10"
+                "SparNiche requires hidden_dims=[64,16] and num_heads=1"
             )
+        if int(dec_cluster_n) <= 0:
+            raise ValueError("SparNiche dec_cluster_n must be positive")
         self.input_dim = int(input_dim)
         self.feat_hidden1, self.feat_hidden2 = hidden_dims
         self.gcn_hidden1 = int(self.feat_hidden1)
@@ -517,7 +518,7 @@ class SparNicheEncoder(nn.Module):
 
 @dataclass
 class SparNicheOutput:
-    """Outputs required by the RNA-only SparNiche training and benchmark flow."""
+    """Outputs required by SparNiche training and benchmark flow."""
 
     embedding: torch.Tensor
     reconstruction: torch.Tensor
@@ -527,7 +528,7 @@ class SparNicheOutput:
 
 
 class SparNiche(nn.Module):
-    """Complete SparNiche RNA encoder without a synthetic second view."""
+    """RNA-primary SparNiche with an optional ADT embedding branch."""
 
     def __init__(
         self,
@@ -541,11 +542,16 @@ class SparNiche(nn.Module):
         local_graph_normalize: bool = True,
         residual_gcn_layers: int = 1,
         mlp_layers: int = 2,
+        double_view: bool = False,
+        view2_dim: int | None = None,
     ) -> None:
         super().__init__()
         config = dict(sparniche_config or {})
         self.input_dim = int(input_dim)
         self.latent_dim = int(latent_dim)
+        self.double_view = bool(double_view)
+        if self.double_view and (view2_dim is None or int(view2_dim) <= 0):
+            raise ValueError("double_view requires a positive view2_dim")
         self.encoder = SparNicheEncoder(
             self.input_dim,
             self.latent_dim,
@@ -564,6 +570,27 @@ class SparNiche(nn.Module):
             attention_neighbors=config.get("attention_neighbors"),
             attention_chunk_size=config.get("attention_chunk_size"),
         )
+        self.adt_encoder = (
+            nn.Sequential(
+                nn.Linear(int(view2_dim), 64),
+                nn.ELU(),
+                nn.Linear(64, self.latent_dim),
+            ) if self.double_view else None
+        )
+        self.adt_gate = (
+            nn.Linear(2 * self.latent_dim, self.latent_dim)
+            if self.double_view else None
+        )
+        self.adt_decoder = (
+            nn.Sequential(
+                nn.Linear(self.latent_dim, 64),
+                nn.ELU(),
+                nn.Linear(64, int(view2_dim)),
+            ) if self.double_view else None
+        )
+        if self.adt_gate is not None:
+            nn.init.zeros_(self.adt_gate.weight)
+            nn.init.constant_(self.adt_gate.bias, 2.0)
 
     def configure_graph(
         self, graph: dict, graph_mask: torch.Tensor | None = None
@@ -571,11 +598,28 @@ class SparNiche(nn.Module):
         self.encoder.configure_graph(graph, graph_mask=graph_mask)
 
     def forward(
-        self, view1: torch.Tensor, neighbor_idx: torch.Tensor
+        self,
+        view1: torch.Tensor,
+        neighbor_idx: torch.Tensor,
+        view2: torch.Tensor | None = None,
     ) -> SparNicheOutput:
         aux = self.encoder(view1, neighbor_idx, return_aux=True)
         if not isinstance(aux, dict):
             raise TypeError("SparNiche encoder did not return its training outputs")
+        if self.double_view:
+            if view2 is None or view2.ndim != 2 or view2.shape != (view1.shape[0], self.adt_encoder[0].in_features):
+                raise ValueError("double_view requires aligned ADT features with the configured dimension")
+            adt_embedding = self.adt_encoder(view2)
+            gate = torch.sigmoid(self.adt_gate(torch.cat((aux["embedding"], adt_embedding), dim=1)))
+            fused = gate * aux["embedding"] + (1.0 - gate) * adt_embedding
+            adjacency = self.encoder._effective_adjacency()
+            aux["embedding"] = fused
+            aux["reconstruction"] = self.encoder.decoder(fused, adjacency)
+            aux["masked_reconstruction"] = aux["reconstruction"][aux["mask_nodes"]]
+            aux["graph_logits"], aux["graph_mask"] = self.encoder.decode_graph(fused)
+            aux["q"] = self.encoder._q_distribution(fused)
+            aux["adt_reconstruction"] = self.adt_decoder(fused)
+            aux["adt_gate"] = gate
         return SparNicheOutput(
             embedding=aux["embedding"],
             reconstruction=aux["reconstruction"],

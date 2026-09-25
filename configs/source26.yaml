@@ -1,0 +1,20 @@
+# Source26 (MOSTA mouse embryo) validated single-sample overlay.
+# Selected by the DEC/loss search on E9.5_E1S1.MOSTA.
+data:
+  n_neighbors: 8
+  preprocessing:
+    n_top_genes: 3000
+    pca_n_components: 64
+model:
+  latent_dim: 8
+  local_graph_hops: 1
+  sparniche_view1:
+    attention_neighbors: 8
+    dec_cluster_n: 14
+  sparniche:
+    lr: 0.01
+    weight_decay: 0.01
+    dec_kl_w: 0.5
+    gcn_w: 0.1
+    rec_w: 10.0
+    dec_interval: 20

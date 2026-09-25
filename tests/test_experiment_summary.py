@@ -137,14 +137,37 @@ class ExperimentSummaryTests(unittest.TestCase):
             paths = input_paths_from_source(sources)
             self.assertEqual([path.name for path in paths], ["a.h5ad", "b.h5ad", "c.h5ad", "d.h5ad"])
 
-    def test_source24_uses_its_default_overlay(self):
+    def test_source24_uses_its_dedicated_overlay(self):
         config = load_run_config(
             None,
             Path("/root/autodl-fs/data/source24/151671.h5ad"),
         )
         self.assertEqual(config["model"]["latent_dim"], 64)
+        self.assertEqual(config["model"]["local_graph_mode"], "normalized")
+        self.assertNotIn("local_graph_normalize", config["model"])
         self.assertEqual(config["model"]["sparniche"]["lr"], 0.005)
+        self.assertEqual(config["model"]["sparniche_view1"]["attention_neighbors"], 12)
+        self.assertEqual(config["model"]["sparniche_view1"]["attention_chunk_size"], 4096)
         self.assertEqual(config["data"]["n_neighbors"], 12)
+
+    def test_source26_uses_its_dedicated_overlay(self):
+        config = load_run_config(
+            None,
+            Path("/root/autodl-fs/data/source26/E9.5_E1S1.MOSTA.h5ad"),
+        )
+        self.assertEqual(config["data"]["preprocessing"]["n_top_genes"], 3000)
+        self.assertEqual(config["data"]["preprocessing"]["pca_n_components"], 64)
+        self.assertEqual(config["data"]["n_neighbors"], 8)
+        self.assertEqual(config["model"]["latent_dim"], 8)
+        self.assertEqual(config["model"]["local_graph_hops"], 1)
+        self.assertEqual(config["model"]["sparniche_view1"]["attention_neighbors"], 8)
+        self.assertEqual(config["model"]["sparniche_view1"]["dec_cluster_n"], 14)
+        self.assertEqual(config["model"]["sparniche"]["lr"], 0.01)
+        self.assertEqual(config["model"]["sparniche"]["dec_interval"], 20)
+        self.assertEqual(config["model"]["sparniche"]["weight_decay"], 0.01)
+        self.assertEqual(config["model"]["sparniche"]["dec_kl_w"], 0.5)
+        self.assertEqual(config["model"]["sparniche"]["gcn_w"], 0.1)
+        self.assertEqual(config["model"]["sparniche"]["rec_w"], 10.0)
 
     def test_other_sources_keep_the_shared_default(self):
         config = load_run_config(
@@ -153,6 +176,8 @@ class ExperimentSummaryTests(unittest.TestCase):
         )
         self.assertEqual(config["model"]["latent_dim"], 32)
         self.assertEqual(config["model"]["sparniche"]["lr"], 0.01)
+        self.assertEqual(config["evaluation"]["leiden_cluster_lower_offset"], 0)
+        self.assertEqual(config["evaluation"]["leiden_cluster_upper_offset"], 2)
 
     def test_explicit_config_disables_source24_overlay(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -14,6 +14,8 @@ from .data import (
     prepare_sparniche_rna_features,
     resolve_spatial_coordinates,
     resolve_view1,
+    resolve_view2,
+    resolve_view2_key,
 )
 from .config import normalize_sparniche_config
 from .trainer import train_tensors
@@ -53,8 +55,15 @@ def train_adata(
     )
     sparniche_graph = build_sparniche_graph(result_adata.obsm["spatial"], n_neighbors)
     features = resolve_view1(result_adata, data_config)
+    requested_double_view = bool(model_config.get("double_view", False))
+    view2_key = resolve_view2_key(result_adata, data_config) if requested_double_view else None
+    double_view = requested_double_view and view2_key is not None
+    if requested_double_view and not double_view and data_config.get("view2", {}).get("key") != "auto":
+        raise KeyError("configured second view is unavailable")
+    model_config["double_view"] = double_view
+    adt_features = resolve_view2(result_adata, data_config) if double_view else None
     fingerprint = data_fingerprint(
-        result_adata, features=features, data_config=data_config
+        result_adata, features=features, data_config=data_config, view2=adt_features
     )
     trained = train_tensors(
         features,
@@ -64,6 +73,7 @@ def train_adata(
         output_dir,
         resume=resume,
         data_fingerprint=fingerprint,
+        view2=adt_features,
     )
     device = next(trained.model.parameters()).device
     trained.model.eval()
@@ -71,6 +81,7 @@ def train_adata(
         clean_output = trained.model(
             features.to(device),
             neighbor_idx.to(device),
+            adt_features.to(device) if adt_features is not None else None,
         )
 
     result_adata.obsm["sparniche"] = clean_output.embedding.cpu().numpy()
@@ -82,6 +93,15 @@ def train_adata(
         "data_fingerprint": fingerprint,
         "view_contract": {
             "view1": "RNA:obsm[feat]",
+            "double_view": double_view,
+            "view2": (
+                f"{view2_key.upper()}:obsm[{view2_key}]"
+                if double_view else "disabled"
+            ),
+            "adt_reconstruction_weight": (
+                float(model_config.get("sparniche", {}).get("adt_rec_w", 1.0))
+                if double_view else 0.0
+            ),
             "expression_neighbor_mean_input": False,
         },
             "rna_view1_contract": {
@@ -131,7 +151,8 @@ def train_adata(
         },
         "configured_encoder": "sparniche",
     }
-    result_adata.write_h5ad(output_dir / "trained.h5ad")
+    if bool(config.get("benchmark", {}).get("write_h5ad", True)):
+        result_adata.write_h5ad(output_dir / "trained.h5ad")
     return PipelineArtifacts(
         adata=result_adata,
         training_result=trained,
